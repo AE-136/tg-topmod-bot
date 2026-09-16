@@ -1,0 +1,207 @@
+"""
+Telegram-бот: ограничение права писать в конкретных темах (topics) группы
+конкретным пользователям.
+
+Как это работает:
+- Бот должен быть добавлен в группу как администратор с правом
+  "Удаление сообщений" (Delete messages).
+- Бот слушает все сообщения (админ-боты получают их независимо от privacy mode).
+- Для каждой темы можно назначить режим "whitelist": писать разрешено
+  только тем, кого явно добавили командой /allow.
+- Если пользователь не в списке разрешённых для этой темы - его сообщение
+  удаляется сразу после отправки.
+
+Настройка происходит прямо в Telegram, командами, отправленными внутри нужной темы.
+"""
+
+import logging
+import os
+
+from telegram import Update
+from telegram.constants import ChatMemberStatus
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+
+import storage
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+# BOT_TOKEN - имя переменной окружения, которое bothost.ru подставляет
+# автоматически, если бот создан через мастер "Telegram" с указанием токена.
+# API_TOKEN / TELEGRAM_BOT_TOKEN - синонимы на случай общего Python-шаблона.
+BOT_TOKEN = (
+    os.environ.get("BOT_TOKEN")
+    or os.environ.get("API_TOKEN")
+    or os.environ.get("TELEGRAM_BOT_TOKEN")
+)
+
+
+def get_topic_id(update: Update) -> int:
+    """General (без темы) хранится как 0."""
+    msg = update.effective_message
+    return msg.message_thread_id if msg and msg.message_thread_id else 0
+
+
+async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user = update.effective_user
+    chat = update.effective_chat
+    if user is None or chat is None:
+        return False
+    member = await context.bot.get_chat_member(chat.id, user.id)
+    return member.status in (ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR)
+
+
+async def cmd_allow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await is_admin(update, context):
+        await update.message.reply_text("Только администраторы могут использовать эту команду.")
+        return
+
+    chat_id = update.effective_chat.id
+    topic_id = get_topic_id(update)
+
+    target_id = None
+    target_name = None
+
+    if update.message.reply_to_message and update.message.reply_to_message.from_user:
+        user = update.message.reply_to_message.from_user
+        target_id = user.id
+        target_name = user.username or user.first_name
+    elif context.args and context.args[0].lstrip("-").isdigit():
+        target_id = int(context.args[0])
+        target_name = context.args[1] if len(context.args) > 1 else str(target_id)
+
+    if target_id is None:
+        await update.message.reply_text(
+            "Ответьте командой /allow на сообщение пользователя, которому нужно "
+            "разрешить писать в ЭТОЙ теме, либо укажите его user_id: /allow 123456789 [имя]"
+        )
+        return
+
+    storage.allow_user(chat_id, topic_id, target_id, target_name)
+    await update.message.reply_text(
+        f"Пользователь {target_name or target_id} теперь может писать в этой теме."
+    )
+
+
+async def cmd_disallow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await is_admin(update, context):
+        await update.message.reply_text("Только администраторы могут использовать эту команду.")
+        return
+
+    chat_id = update.effective_chat.id
+    topic_id = get_topic_id(update)
+
+    target_id = None
+    if update.message.reply_to_message and update.message.reply_to_message.from_user:
+        target_id = update.message.reply_to_message.from_user.id
+    elif context.args and context.args[0].isdigit():
+        target_id = int(context.args[0])
+
+    if target_id is None:
+        await update.message.reply_text(
+            "Ответьте командой /disallow на сообщение пользователя, "
+            "либо укажите его user_id: /disallow 123456789"
+        )
+        return
+
+    storage.disallow_user(chat_id, topic_id, target_id)
+    await update.message.reply_text("Доступ пользователя к этой теме отменён.")
+
+
+async def cmd_open_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await is_admin(update, context):
+        await update.message.reply_text("Только администраторы могут использовать эту команду.")
+        return
+
+    chat_id = update.effective_chat.id
+    topic_id = get_topic_id(update)
+    storage.reset_topic(chat_id, topic_id)
+    await update.message.reply_text("Тема снова открыта для всех участников группы.")
+
+
+async def cmd_topic_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    topic_id = get_topic_id(update)
+    mode = storage.get_topic_mode(chat_id, topic_id)
+
+    if mode != "whitelist":
+        await update.message.reply_text("Эта тема открыта — писать может любой участник группы.")
+        return
+
+    users = storage.list_allowed(chat_id, topic_id)
+    if not users:
+        await update.message.reply_text(
+            "Тема в режиме белого списка, но список пуст — писать пока не может никто."
+        )
+        return
+
+    lines = [f"- {uname or uid} (id: {uid})" for uid, uname in users]
+    await update.message.reply_text("Писать в этой теме разрешено:\n" + "\n".join(lines))
+
+
+async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await is_admin(update, context):
+        await update.message.reply_text("Только администраторы могут использовать эту команду.")
+        return
+
+    chat_id = update.effective_chat.id
+    rules = storage.list_all_rules(chat_id)
+    if not rules:
+        await update.message.reply_text("Для этой группы пока нет ограничений по темам.")
+        return
+
+    lines = []
+    for topic_id, mode in rules:
+        label = "General (без темы)" if topic_id == 0 else f"topic_id={topic_id}"
+        lines.append(f"{label}: {mode}")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def enforce_rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if msg is None or msg.from_user is None:
+        # анонимный админ или служебное сообщение - не трогаем
+        return
+
+    chat_id = update.effective_chat.id
+    topic_id = get_topic_id(update)
+    user_id = msg.from_user.id
+
+    if storage.is_user_allowed(chat_id, topic_id, user_id):
+        return
+
+    try:
+        await context.bot.delete_message(chat_id, msg.message_id)
+        logger.info(
+            "Удалено сообщение user_id=%s chat_id=%s topic_id=%s",
+            user_id, chat_id, topic_id,
+        )
+    except Exception as e:
+        logger.warning("Не удалось удалить сообщение: %s", e)
+
+
+def main() -> None:
+    if not BOT_TOKEN:
+        raise SystemExit("Укажите токен бота в переменной окружения BOT_TOKEN")
+
+    storage.init_db()
+
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("allow", cmd_allow))
+    application.add_handler(CommandHandler("disallow", cmd_disallow))
+    application.add_handler(CommandHandler("open_topic", cmd_open_topic))
+    application.add_handler(CommandHandler("topic_status", cmd_topic_status))
+    application.add_handler(CommandHandler("rules", cmd_rules))
+
+    # Все обычные (не командные) сообщения в группах и супергруппах проверяем на удаление
+    application.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, enforce_rules))
+
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
