@@ -6,6 +6,9 @@
     'open'      - писать может любой участник группы (по умолчанию)
     'whitelist' - писать могут только пользователи из allowed_users
 - General (общий чат без темы) хранится под topic_id = 0
+- право УПРАВЛЯТЬ темой (запускать /allow, /disallow, /open_topic) совпадает
+  с присутствием в белом списке этой темы: см. is_explicitly_listed() и
+  can_manage_topic() в bot.py.
 """
 
 import os
@@ -85,9 +88,20 @@ def disallow_user(chat_id: int, topic_id: int, user_id: int) -> None:
 
 
 def is_user_allowed(chat_id: int, topic_id: int, user_id: int) -> bool:
+    """Может ли пользователь ПИСАТЬ в теме прямо сейчас (учитывает режим темы:
+    в открытой теме - да, для всех; в whitelist-теме - только явно добавленные)."""
     mode = get_topic_mode(chat_id, topic_id)
     if mode != "whitelist":
         return True
+    return is_explicitly_listed(chat_id, topic_id, user_id)
+
+
+def is_explicitly_listed(chat_id: int, topic_id: int, user_id: int) -> bool:
+    """Явно ли пользователь добавлен в белый список этой темы - НЕ зависит от
+    текущего режима темы (в отличие от is_user_allowed). Используется, чтобы
+    решить, может ли пользователь сам управлять темой командами /allow,
+    /disallow, /open_topic: одно только то, что тема сейчас открыта, не даёт
+    никому права её настраивать."""
     with closing(sqlite3.connect(DB_PATH)) as conn:
         row = conn.execute(
             "SELECT 1 FROM allowed_users WHERE chat_id=? AND topic_id=? AND user_id=?",
