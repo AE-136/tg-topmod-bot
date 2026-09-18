@@ -86,18 +86,3 @@ previously appeared in a chat the bot can see. The reliable way to grant
 access is to reply to an existing message from that person with `/allow`. If
 they haven't posted yet, use their numeric `user_id` instead (you can get it
 from a bot like [@userinfobot](https://t.me/userinfobot)).
-
-## Project structure
-
-```
-.
-├── bot.py             # commands and the message-deletion handler
-├── storage.py          # access rule storage (SQLite)
-├── requirements.txt    # dependencies
-└── README.md
-```
-
-## License
-
-No license has been specified yet. Add a `LICENSE` file (e.g. MIT) if you
-plan to distribute this publicly under clear usage terms.
