@@ -1,119 +1,114 @@
 # Telegram Topic Moderator
 
-Бот, который разрешает писать в конкретных темах (topics) группы только
-конкретным пользователям. Всем остальным сообщения в этой теме удаляются
-автоматически, сразу после отправки.
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Telegram Bot API](https://img.shields.io/badge/Telegram%20Bot%20API-21.6-26A5E4)
 
-## 1. Создание бота
+> **AI disclosure:** This project — including the code and this README — was
+> generated with the help of an AI assistant (Claude, by Anthropic). Review
+> the code before relying on it in production.
 
-1. Напишите **@BotFather** в Telegram → `/newbot` → следуйте инструкциям.
-2. Скопируйте выданный токен — он понадобится ниже.
-3. (Рекомендуется, но не обязательно) отправьте BotFather `/setprivacy` →
-   выберите вашего бота → **Disable**. Это подстраховка: если бот когда-либо
-   временно потеряет права администратора, он всё равно продолжит видеть
-   сообщения. Пока бот админ — Telegram и так присылает ему все сообщения.
+A Telegram bot for groups with **topics** enabled. It lets you assign, per
+topic, a specific list of users who are allowed to post there. Messages from
+anyone else are deleted automatically as soon as they're sent. Everything is
+configured directly in Telegram — no external dashboard required.
 
-## 2. Добавление в группу
+## Features
 
-1. Добавьте бота в вашу группу.
-2. Сделайте его **администратором**. Обязательное право — **«Удаление
-   сообщений»** (Delete messages). Остальные права можно не давать.
-3. Если хотите ограничивать именно темы форума — убедитесь, что в группе
-   включены **Темы** (Group settings → Topics). Без тем бот тоже работает,
-   просто вся группа считается одной темой «General».
+- Per-topic write access control, independent for each forum topic.
+- "Whitelist" mode: until users are explicitly allowed for a topic, anyone
+  can post there. After the first user is allowed, only listed users can.
+- Rule management right in the chat: `/allow`, `/disallow`, `/open_topic`,
+  `/topic_status`, `/rules`.
+- Configuration commands are restricted to group administrators.
+- Also works in regular groups without topics — the whole group is then
+  treated as a single ("General") topic.
+- Rules are stored in SQLite; the database path is configurable via an
+  environment variable.
 
-## 3. Установка и локальный запуск (для проверки перед деплоем)
+## How it works
+
+As long as the bot is an admin in the group, Telegram forwards it every
+message regardless of the group's privacy setting (this is how admin bots
+behave on the Bot API). For each incoming message the bot looks at `chat_id`
+and `message_thread_id` (the topic id), checks the stored rules, and if the
+author isn't on the allowed list for that topic, calls `deleteMessage`.
+
+## Requirements
+
+- Python 3.10+
+- A bot token from [@BotFather](https://t.me/BotFather)
+- The bot must be a group administrator with at least the **"Delete
+  messages"** permission
+- To restrict actual forum topics, **Topics** must be enabled in the group
+  (Group settings → Topics)
+
+## Installation and running
 
 ```bash
+git clone https://github.com/<your-username>/<your-repo>.git
+cd <your-repo>
 pip install -r requirements.txt
 
-# Linux / macOS
-export BOT_TOKEN="ваш_токен_от_BotFather"
-python bot.py
-
-# Windows (PowerShell)
-$env:BOT_TOKEN="ваш_токен_от_BotFather"
+export BOT_TOKEN="your_token_from_BotFather"
 python bot.py
 ```
 
-Бот работает через long polling — процесс должен быть запущен постоянно.
-Локально это неудобно (компьютер должен не выключаться), поэтому дальше —
-деплой на **bothost.ru**.
+The bot uses long polling, so the process needs to stay running
+continuously — running it locally is only meant for testing before you
+deploy it somewhere that keeps it alive.
 
-## 3.1. Деплой на bothost.ru
+## Configuration
 
-Bothost поднимает бота в Docker-контейнере сам — вам нужно только положить
-код и настроить пару вещей.
+Environment variables:
 
-**Вариант А — через Git.** Залейте эти 4 файла (`bot.py`, `storage.py`,
-`requirements.txt`, `README.md`) в репозиторий на GitHub/GitLab и при
-создании бота на bothost укажите ссылку на репозиторий и ветку. Файл
-`bot.py` в корне — стандартное имя, точку входа указывать не нужно.
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `BOT_TOKEN` | yes | — | Bot token from BotFather. The aliases `API_TOKEN` and `TELEGRAM_BOT_TOKEN` are also accepted, for compatibility with some hosting platforms. |
+| `DB_PATH` | no | `./bot_data.db` | Path to the SQLite database file holding the access rules. Set this explicitly if your hosting platform wipes files next to the script on redeploy. |
 
-**Вариант Б — без Git.** Упакуйте те же файлы в `.zip` (без `venv`,
-`__pycache__` и т.п.) и загрузите через кнопку «Загрузить из архива» на
-дашборде (доступно на тарифах Basic/Pro; на бесплатном мастер загрузки
-отправит на страницу тарифов).
+## Bot commands
 
-**Токен бота.** Если вы создаёте бота через мастер и указываете тип
-«Telegram» с токеном в форме — bothost сам положит его в переменную
-окружения `BOT_TOKEN`, код это уже подхватывает без правок. Если создаёте
-как обобщённый Python-проект — добавьте `BOT_TOKEN` вручную в разделе
-«Переменные окружения» настроек бота.
+All commands are sent **inside the topic** you're configuring.
 
-**Хранение базы данных (важно!).** Bothost при каждом обновлении кода
-пересобирает контейнер, и всё, что лежит рядом со скриптом, может быть
-стёрто. Для файлов, которые должны переживать обновления, платформа
-выделяет отдельную папку `/app/data`. Поэтому:
-
-1. В настройках бота на bothost добавьте переменную окружения:
-   ```
-   DB_PATH=/app/data/bot_data.db
-   ```
-   `storage.py` уже умеет читать этот путь — база данных с правилами
-   доступа будет создана именно там и не потеряется при обновлениях.
-2. На **бесплатном тарифе** данные в контейнере в принципе стираются при
-   каждом перезапуске (это ограничение тарифа, не кода) — для сохранения
-   правил между перезапусками нужен тариф **Basic** или выше с постоянным
-   диском (Volume).
-
-После деплоя проверьте логи бота в панели bothost — там будет видно, что
-контейнер запустился и polling пошёл, без ошибок про токен или базу.
-
-## 4. Настройка правил — прямо в Telegram
-
-Все команды нужно отправлять **внутри той темы**, которую вы настраиваете
-(зайдите в тему и пишите команды туда).
-
-| Команда | Что делает |
+| Command | Action |
 |---|---|
-| `/allow` (ответом на сообщение пользователя) | Разрешает этому пользователю писать в текущей теме. Тема автоматически переходит в режим «белый список» — писать теперь может только тот, кого вы явно добавили. |
-| `/allow 123456789 Имя` | То же самое, но по числовому `user_id`, если у вас нет его сообщения для ответа. |
-| `/disallow` (ответом на сообщение пользователя) | Убирает пользователя из разрешённых для текущей темы. |
-| `/open_topic` | Сбрасывает ограничения — тема снова открыта для всех участников группы. |
-| `/topic_status` | Показывает, открыта тема или в режиме белого списка, и кому разрешено писать. |
-| `/rules` | Показывает список всех настроенных тем и их режимов в этой группе. |
+| `/allow` (as a reply to a user's message) | Allows the author of that message to post in the current topic. The topic switches to "whitelist" mode. |
+| `/allow <user_id> [name]` | Same thing by numeric ID, if you don't have a message from that user to reply to. |
+| `/disallow` (as a reply to a user's message) | Removes the user from the allowed list for the current topic. |
+| `/open_topic` | Clears the restriction — the topic is open to every group member again. |
+| `/topic_status` | Shows the current mode of the topic and the list of allowed users. |
+| `/rules` | Lists all configured topics and their modes for the group. |
 
-Все команды настройки доступны только администраторам группы.
+All configuration commands are restricted to group administrators.
 
-### Как это работает по сути
+## Deployment
 
-- Пока для темы не выполнен ни один `/allow` — она **открыта**, писать может
-  любой участник.
-- Как только вы хоть раз использовали `/allow` в теме — она переходит в
-  режим **whitelist**: с этого момента писать могут только те, кто в списке.
-  Все остальные сообщения в этой теме бот удаляет мгновенно.
-- `/open_topic` возвращает тему в открытый режим и очищает список.
+The bot is a regular long-running Python process, so it works on any hosting
+that supports that (a VPS, systemd, Docker, or a dedicated bot-hosting
+platform). One thing to watch for on platforms with an ephemeral filesystem
+(where redeploying rebuilds the container and wipes local files): point
+`DB_PATH` at a persistent disk/volume if the platform offers one, otherwise
+your rules will reset on every redeploy.
 
-### Важное ограничение Telegram Bot API
+## Telegram Bot API limitations
 
-Бот не может искать произвольного пользователя по `@username`, если тот
-раньше не писал в чат, который бот видит. Поэтому надёжный способ выдать
-доступ — **ответить командой `/allow` на любое существующее сообщение этого
-человека**. Если сообщений от него ещё нет, используйте числовой `user_id`
-(его можно узнать, например, через @userinfobot).
+The bot can't look up an arbitrary user by `@username` unless that user has
+previously appeared in a chat the bot can see. The reliable way to grant
+access is to reply to an existing message from that person with `/allow`. If
+they haven't posted yet, use their numeric `user_id` instead (you can get it
+from a bot like [@userinfobot](https://t.me/userinfobot)).
 
-## 5. Данные
+## Project structure
 
-Все правила хранятся локально в файле `bot_data.db` (SQLite) рядом со
-скриптом — они переживают перезапуск бота.
+```
+.
+├── bot.py             # commands and the message-deletion handler
+├── storage.py          # access rule storage (SQLite)
+├── requirements.txt    # dependencies
+└── README.md
+```
+
+## License
+
+No license has been specified yet. Add a `LICENSE` file (e.g. MIT) if you
+plan to distribute this publicly under clear usage terms.
