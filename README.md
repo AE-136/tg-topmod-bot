@@ -33,6 +33,10 @@ behave on the Bot API). For each incoming message the bot looks at `chat_id`
 and `message_thread_id` (the topic id), checks the stored rules, and if the
 author isn't on the allowed list for that topic, calls `deleteMessage`.
 
+The bot uses long polling, so the process needs to stay running
+continuously — running it locally is only meant for testing before you
+deploy it somewhere that keeps it alive.
+
 ## Requirements
 
 - Python 3.10+
@@ -41,21 +45,6 @@ author isn't on the allowed list for that topic, calls `deleteMessage`.
   messages"** permission
 - To restrict actual forum topics, **Topics** must be enabled in the group
   (Group settings → Topics)
-
-## Installation and running
-
-```bash
-git clone https://github.com/<your-username>/<your-repo>.git
-cd <your-repo>
-pip install -r requirements.txt
-
-export BOT_TOKEN="your_token_from_BotFather"
-python bot.py
-```
-
-The bot uses long polling, so the process needs to stay running
-continuously — running it locally is only meant for testing before you
-deploy it somewhere that keeps it alive.
 
 ## Configuration
 
