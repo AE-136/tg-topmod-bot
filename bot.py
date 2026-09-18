@@ -191,14 +191,21 @@ def main() -> None:
 
     application = Application.builder().token(BOT_TOKEN).build()
 
-    application.add_handler(CommandHandler("allow", cmd_allow))
-    application.add_handler(CommandHandler("disallow", cmd_disallow))
-    application.add_handler(CommandHandler("open_topic", cmd_open_topic))
-    application.add_handler(CommandHandler("topic_status", cmd_topic_status))
-    application.add_handler(CommandHandler("rules", cmd_rules))
+    # Обработчики команд регистрируем в группе 0 (по умолчанию) - они должны
+    # успеть отработать первыми и ответить пользователю.
+    application.add_handler(CommandHandler("allow", cmd_allow), group=0)
+    application.add_handler(CommandHandler("disallow", cmd_disallow), group=0)
+    application.add_handler(CommandHandler("open_topic", cmd_open_topic), group=0)
+    application.add_handler(CommandHandler("topic_status", cmd_topic_status), group=0)
+    application.add_handler(CommandHandler("rules", cmd_rules), group=0)
 
-    # Все обычные (не командные) сообщения в группах и супергруппах проверяем на удаление
-    application.add_handler(MessageHandler(filters.ChatType.GROUPS & ~filters.COMMAND, enforce_rules))
+    # enforce_rules регистрируем в ОТДЕЛЬНОЙ группе (1) и без исключения команд:
+    # в python-telegram-bot обработчики из разных групп выполняются независимо,
+    # поэтому это правило проверяет КАЖДОЕ сообщение в группе - включая команды -
+    # даже если его уже обработал один из хендлеров выше. Иначе сообщение с
+    # любой командой (в том числе несуществующей, типа /spam) не проверялось бы
+    # на удаление и было бы дырой для обхода ограничений темы.
+    application.add_handler(MessageHandler(filters.ChatType.GROUPS, enforce_rules), group=1)
 
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
