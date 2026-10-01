@@ -20,13 +20,26 @@ Telegram-бот: ограничение права писать в конкре�
   игнорируется (без ответа) - даже если он админ группы. Пока тема открыта
   (whitelist ещё не включён), команда доступна любому админу - это точка
   входа: первый /allow в теме и включает режим белого списка.
+
+Упоминание @all:
+- Если в разрешённом (не удаляемом) сообщении встречается "@all", бот
+  отвечает упоминаниями:
+    - в теме с включённым белым списком - только тех, кто в нём состоит;
+    - в открытой теме - всех пользователей, которых бот когда-либо видел
+      пишущими в этой группе (в любой теме).
+  Важно: Telegram Bot API не даёт боту получить полный список участников
+  группы - это ограничение платформы, не кода. Поэтому "все пользователи
+  беседы" технически означает "все, кто хоть раз написал хоть что-то, пока
+  бот состоял в группе", а не список участников из настроек чата.
 """
 
+import html
 import logging
 import os
+import re
 
 from telegram import Update
-from telegram.constants import ChatMemberStatus
+from telegram.constants import ChatMemberStatus, ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 import storage
@@ -226,27 +239,99 @@ async def cmd_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("Белый список этой темы:\n" + "\n".join(lines))
 
 
+# "@all" как отдельное слово, без учёта регистра. (?<![\w@]) и (?!\w) не дают
+# сработать на "user@allmail.com" или "@allilуя" - должно быть именно "@all"
+# само по себе.
+ALL_MENTION_RE = re.compile(r"(?i)(?<![\w@])@all(?!\w)")
+
+
 async def enforce_rules(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if msg is None or msg.from_user is None:
         # анонимный админ или служебное сообщение - не трогаем
         return
 
+    if msg.from_user.id == context.bot.id:
+        # Сообщения самого бота (ответы на команды и т.п.) никогда не трогаем:
+        # бот не добавлен в белый список самого себя, и без этой проверки его
+        # собственные ответы в whitelist-теме удалялись бы как чужие.
+        return
+
     chat_id = update.effective_chat.id
     topic_id = get_topic_id(update)
     user_id = msg.from_user.id
+    display_name = msg.from_user.username or msg.from_user.first_name
 
-    if storage.is_user_allowed(chat_id, topic_id, user_id):
+    # Запоминаем автора как "видели в этой группе" ДО проверки прав - это
+    # нужно для @all в открытых темах, и человек остаётся участником беседы
+    # независимо от того, разрешено ли ему писать именно здесь.
+    storage.record_seen_user(chat_id, user_id, display_name)
+
+    if not storage.is_user_allowed(chat_id, topic_id, user_id):
+        try:
+            await context.bot.delete_message(chat_id, msg.message_id)
+            logger.info(
+                "Удалено сообщение user_id=%s chat_id=%s topic_id=%s",
+                user_id, chat_id, topic_id,
+            )
+        except Exception as e:
+            logger.warning("Не удалось удалить сообщение: %s", e)
         return
 
-    try:
-        await context.bot.delete_message(chat_id, msg.message_id)
-        logger.info(
-            "Удалено сообщение user_id=%s chat_id=%s topic_id=%s",
-            user_id, chat_id, topic_id,
+    await maybe_announce_all(update, context, chat_id, topic_id)
+
+
+async def maybe_announce_all(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, topic_id: int
+) -> None:
+    """Если в сообщении встречается "@all", отвечает упоминаниями:
+    - в whitelist-теме - только тех, кто в её белом списке;
+    - в открытой теме - всех пользователей, которых бот видел пишущими в
+      этой группе (см. storage.list_seen_users и ограничение Bot API выше).
+    """
+    msg = update.effective_message
+    text = msg.text or msg.caption or ""
+    if not ALL_MENTION_RE.search(text):
+        return
+
+    mode = storage.get_topic_mode(chat_id, topic_id)
+    if mode == "whitelist":
+        rows = storage.list_allowed(chat_id, topic_id)
+    else:
+        rows = storage.list_seen_users(chat_id)
+
+    # не упоминаем самого автора @all - он и так знает, что написал
+    rows = [(uid, uname) for uid, uname in rows if uid != msg.from_user.id]
+
+    if not rows:
+        return  # некого отмечать - список пуст (или там был только сам автор)
+
+    # tg://user?id=<id> создаёт настоящее упоминание (с уведомлением) даже у
+    # пользователей без @username - в отличие от текстового "@имя".
+    mentions = [
+        f'<a href="tg://user?id={uid}">{html.escape(uname or str(uid))}</a>'
+        for uid, uname in rows
+    ]
+
+    thread_id = topic_id or None  # 0 (General) - это отсутствие темы для Bot API
+
+    # Делим на части, чтобы не упереться в лимит длины сообщения Telegram
+    # (4096 символов) при большом списке.
+    chunk: list[str] = []
+    chunk_len = 0
+    for mention in mentions:
+        if chunk and chunk_len + len(mention) + 1 > 3500:
+            await context.bot.send_message(
+                chat_id, " ".join(chunk), message_thread_id=thread_id, parse_mode=ParseMode.HTML
+            )
+            chunk, chunk_len = [], 0
+        chunk.append(mention)
+        chunk_len += len(mention) + 1
+
+    if chunk:
+        await context.bot.send_message(
+            chat_id, " ".join(chunk), message_thread_id=thread_id, parse_mode=ParseMode.HTML
         )
-    except Exception as e:
-        logger.warning("Не удалось удалить сообщение: %s", e)
 
 
 def main() -> None:

@@ -8,7 +8,12 @@
 - General (общий чат без темы) хранится под topic_id = 0
 - право УПРАВЛЯТЬ темой (запускать /allow, /disallow, /open_topic) совпадает
   с присутствием в белом списке этой темы: см. is_explicitly_listed() и
-  can_manage_topic() в bot.py.
+  check_topic_command_permission() в bot.py.
+- seen_users - учёт всех пользователей, которые хоть раз написали в группе
+  (в любой теме). Нужен для команды @all: Telegram Bot API НЕ даёт боту
+  получить список всех участников группы (это ограничение платформы, не
+  кода), поэтому "все пользователи в беседе" приближается списком тех, кто
+  реально отметился хотя бы одним сообщением.
 """
 
 import os
@@ -44,6 +49,16 @@ def init_db() -> None:
                 user_id INTEGER NOT NULL,
                 username TEXT,
                 PRIMARY KEY (chat_id, topic_id, user_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS seen_users (
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                PRIMARY KEY (chat_id, user_id)
             )
             """
         )
@@ -122,6 +137,32 @@ def list_all_rules(chat_id: int):
     with closing(sqlite3.connect(DB_PATH)) as conn:
         return conn.execute(
             "SELECT topic_id, mode FROM topic_rules WHERE chat_id=?",
+            (chat_id,),
+        ).fetchall()
+
+
+def record_seen_user(chat_id: int, user_id: int, username: str | None = None) -> None:
+    """Запоминает, что этот пользователь написал в группе (в любой теме).
+    Вызывается на КАЖДОЕ сообщение от реального пользователя, независимо от
+    того, останется оно или будет удалено - человек всё равно является
+    участником беседы. username обновляется на самое свежее значение."""
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.execute(
+            """
+            INSERT INTO seen_users (chat_id, user_id, username) VALUES (?, ?, ?)
+            ON CONFLICT(chat_id, user_id) DO UPDATE SET username=excluded.username
+            """,
+            (chat_id, user_id, username),
+        )
+        conn.commit()
+
+
+def list_seen_users(chat_id: int):
+    """Все пользователи, хоть раз написавшие в этой группе - приближение
+    "всех участников беседы" в пределах того, что вообще видно боту."""
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        return conn.execute(
+            "SELECT user_id, username FROM seen_users WHERE chat_id=?",
             (chat_id,),
         ).fetchall()
 
