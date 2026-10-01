@@ -20,8 +20,8 @@ configured directly in Telegram — no external dashboard required.
 - Rule management right in the chat: `/allow`, `/disallow`, `/open_topic`,
   `/topic_status`, `/rules`, `/whitelist`.
 - Configuration commands are restricted to group administrators.
-- `@all`: mention everyone relevant to the current topic in one message —
-  see [Mentioning everyone with `@all`](#mentioning-everyone-with-all) below.
+- `/all`: mention everyone relevant to the current topic in one message —
+  see [Mentioning everyone with `/all`](#mentioning-everyone-with-all) below.
 - Also works in regular groups without topics — the whole group is then
   treated as a single ("General") topic.
 - Rules are stored in SQLite; the database path is configurable via an
@@ -34,11 +34,9 @@ message regardless of the group's privacy setting (this is how admin bots
 behave on the Bot API). For each incoming message (except the bot's own) the
 bot looks at `chat_id` and `message_thread_id` (the topic id), records the
 author as "seen" in that group, checks the stored rules, and if the author
-isn't on the allowed list for that topic, calls `deleteMessage`. The bot's
-own messages are never checked against the rules or recorded as "seen" — it
-isn't a member to track, and it's never added to any topic's whitelist, so
-without this exclusion its own replies in a whitelist topic would get
-deleted as unauthorized.
+isn't on the allowed list for that topic, calls `deleteMessage`. (Telegram
+doesn't deliver a bot's own messages to it, and the code additionally skips
+them as a safeguard, so the bot never deletes or tracks itself.)
 
 ## Requirements
 
@@ -99,19 +97,21 @@ All commands are sent **inside the topic** you're configuring (except
 | `/topic_status` | anyone | Shows the current mode of the topic and the list of allowed users, for this topic only. |
 | `/rules` | any group admin | Lists all configured topics and their modes for the whole group. |
 | `/whitelist` | any group admin | Lists the users in the whitelist of the **current** topic only. |
+| `/all` | anyone allowed to post in the topic | Mentions the topic's whitelist (whitelist topic) or everyone the bot has seen posting (open topic). See [below](#mentioning-everyone-with-all). |
 
-## Mentioning everyone with `@all`
+## Mentioning everyone with `/all`
 
-If an allowed message contains the standalone word `@all`, the bot replies
-with mentions in that same topic:
+Send `/all` in a topic and the bot replies in that same topic with mentions:
 
 - **Whitelist topic** — mentions only the users in that topic's whitelist.
 - **Open topic** (no whitelist yet) — mentions every user the bot has ever
   seen post in the group, in any topic.
 
-A message from a user who isn't allowed to post is deleted as usual and
-never triggers `@all` — only messages that are allowed to stay can ping
-people. The sender is never included in their own `@all` mentions.
+Only someone who is allowed to post in the topic can use `/all`. From anyone
+else the command is silently ignored and their message is deleted as usual,
+so unauthorized users can't ping people. The sender is never included in
+their own mentions. If there is nobody else to mention, the bot says so
+instead of staying silent.
 
 Mentions use `tg://user?id=<id>` links rather than plain `@username` text,
 so people without a public username still get notified; long lists are
@@ -141,3 +141,18 @@ previously appeared in a chat the bot can see. The reliable way to grant
 access is to reply to an existing message from that person with `/allow`. If
 they haven't posted yet, use their numeric `user_id` instead (you can get it
 from a bot like [@userinfobot](https://t.me/userinfobot)).
+
+## Project structure
+
+```
+.
+├── bot.py             # commands and the message-deletion handler
+├── storage.py          # access rule storage (SQLite)
+├── requirements.txt    # dependencies
+└── README.md
+```
+
+## License
+
+No license has been specified yet. Add a `LICENSE` file (e.g. MIT) if you
+plan to distribute this publicly under clear usage terms.
